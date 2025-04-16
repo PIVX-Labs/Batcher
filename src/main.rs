@@ -96,7 +96,7 @@ fn main() {
     let case_insensitive = cli.case_insensitive;
 
     // PIVX Promos Settings
-    let mut promo_prefix = String::from("promos");
+    let mut promo_prefix = String::new();
 
     // Quietly parse the local PIVX config
     let pivx_config = parse_pivx_conf();
@@ -153,7 +153,7 @@ fn main() {
         }
 
         // Check if they want a prefix used
-        promo_prefix = ask_string(format!("What prefix would you like to use? For example: {}-{}", promo_prefix, get_alpha_numeric_rand(5)).as_str(), promo_prefix.as_str());
+        promo_prefix = ask_string(format!("What prefix would you like to use, if any? For example: promo-{}, or, if omitted: {}", get_alpha_numeric_rand(5), get_alpha_numeric_rand(6)).as_str(), "");
 
         // Start generating!
         println!("Time to begin! Please do NOT cancel or interfere with the generation process!");
@@ -547,7 +547,12 @@ pub fn create_promo_key(prefix: &String) -> OptimisedPromoKeypair {
     let target = PROMO_TARGETS.last().unwrap();
 
     // Generate entropy and append it to the promo code
-    let promo_code = prefix.to_owned() + "-" + &get_alpha_numeric_rand(5);
+    // Omitted prefixes add an extra character for higher entropy - with prefix, we deduct a character.
+    let promo_code = if prefix.is_empty() {
+        get_alpha_numeric_rand(6)
+    } else {
+        prefix.to_owned() + "-" + &get_alpha_numeric_rand(5)
+    };
 
     // Convert the Promo Code to it's first SHA256 hash
     let mut promo_key = sha256::Hash::hash(promo_code.as_bytes()).into_inner();
