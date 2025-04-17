@@ -1,20 +1,19 @@
 [package]
-name = "pivx-vanity"
-description = "Powerful PIVX VanityGen written in Rust."
+name = "batcher"
+description = "An on-chain Promo Code system with multi-coin support, a fork of PIVX Promos."
 version = "0.1.0"
 edition = "2021"
-repository = "https://github.com/PIVX-Labs/VanityGen"
+repository = "https://github.com/PIVX-Labs/Batcher"
 license = "MIT"
 licence-file = "LICENSE"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-pivx_rpc_rs = { path = "./pivx-rpc-rs", version = "0.1.0" }
+pivx_rpc_rs = { path = "./pivx-rpc-rs", version = "0.1.1" }
 rand = "0.8.5"
 getrandom = { version = "0.2", features = ["js"] }
 secp256k1 = { version = "0.22.1", features = ["rand-std"] }
 base58 = "0.2.0"
 ripemd = "0.1.1"
 bitcoin_hashes = "0.11.0"
-clap = { version = "4.0.29", features = ["derive"] }

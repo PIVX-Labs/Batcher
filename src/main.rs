@@ -1,23 +1,18 @@
 use std::{
-    env::home_dir, fs, io::{self, prelude::*}, process::exit, sync::mpsc, thread::{self, available_parallelism}, time
+    env::home_dir,
+    fs,
+    io::{self, prelude::*},
 };
+
+mod coins;
+use coins::{CoinParams, get_supported_coins};
 
 use pivx_rpc_rs::{self, BitcoinRpcClient};
 
-use secp256k1::{Secp256k1, PublicKey, rand, rand::Rng, SecretKey};
-use ripemd::{Ripemd160, Digest};
 use base58::ToBase58;
-use bitcoin_hashes::{sha256d, sha256, Hash};
-use clap::{Parser, command, arg};
-
-/// A struct representing an optimized keypair.
-///
-/// This struct contains a private key of type `SecretKey` and a public key represented as a string.
-///
-pub struct OptimisedKeypair {
-    private: SecretKey,
-    public: String
-}
+use bitcoin_hashes::{sha256, sha256d, Hash};
+use ripemd::{Digest, Ripemd160};
+use secp256k1::{rand, rand::Rng, PublicKey, Secp256k1, SecretKey};
 
 /// A struct representing an optimized promotional keypair.
 ///
@@ -42,258 +37,169 @@ pub struct PromoBatch {
     qty: u64,
 }
 
-/// A struct representing the result of a vanity address generation.
-///
-/// This struct contains an optimized keypair and the number of iterations performed.
-///
-pub struct VanityResult {
-    /// The generated keypair that matches the vanity target.
-    keypair: OptimisedKeypair,
-    /// The number of iterations performed.
-    iterations: u64,
-}
-
 /// Iterations required for a PIVX Promo to be derived.
 ///
 /// This constant is an array of `u64` values, representing the iterations required for a PIVX
 /// promotional key to be derived. Currently, only one value is present in the array.
 ///
-pub const PROMO_TARGETS: [u64; 1] = [
-    12_500_000,
-];
+pub const PROMO_TARGETS: [u64; 1] = [12_500_000];
 
-/// The network fee paid for the redeemer client
-/// 
-/// This can be changed, but is recommended to be universal cross-client for improved UX
-pub const PROMO_FEE: f64 = 0.00010000;
-
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-   /// VanityGen Target: the desired prefix to use for the address
-   #[arg(long, default_value_t = String::default())]
-   target: String,
-
-   /// Number of threads to allocate
-   #[arg(long, default_value_t = 0)]
-   threads: usize,
-
-    /// VanityGen Case Insensitivity: can be set to reduce the generation time via wider Base58 scope
-   #[arg(long, default_value_t = false)]
-   case_insensitive: bool,
-
-   /// PIVX Promos Interactive Mode: a mode that allows more fine-tuned, interactive generation with stdin user input
-   #[arg(long, default_value_t = false)]
-   promos: bool,
-}
+/// The default coin to use if none is selected
+pub const DEFAULT_COIN_TICKER: &str = "PIV";
 
 fn main() {
-    let cli = Args::parse();
+    // Select which coin to create promo codes for
+    let coin_params = select_coin();
+    println!("Selected coin: {} ({})", coin_params.name, coin_params.ticker);
 
-    // VanityGen Settings
-    let mut threads = cli.threads;
-    let mut target = cli.target;
-    let case_insensitive = cli.case_insensitive;
-
-    // PIVX Promos Settings
-    let mut promo_prefix = String::new();
-
-    // Quietly parse the local PIVX config
-    let pivx_config = parse_pivx_conf();
+    // Parse the coin's config
+    let coin_config = parse_coin_conf(&coin_params);
 
     // Setup the RPC
     let rpc = BitcoinRpcClient::new(
-        String::from("http://localhost:") + &pivx_config.rpc_port.to_string(),
-        Some(pivx_config.rpc_user.to_owned()),
-        Some(pivx_config.rpc_pass.to_owned()),
+        String::from("http://localhost:") + &coin_config.rpc_port.to_string(),
+        Some(coin_config.rpc_user.to_owned()),
+        Some(coin_config.rpc_pass.to_owned()),
         4,
         10,
-        1000
+        1000,
     );
 
     let should_save: bool;
-    let mut filename = promo_prefix.clone();
+    let mut promo_prefix = String::new();
+    let mut filename = String::from("codes");
     let mut batches: Vec<PromoBatch> = Vec::new();
 
     // If Promo Interactive mode is on: let's ask and figure out ALL the settings beforehand for a fine-tuned experience
-    if cli.promos {
-        should_save = ask_bool("Would you like to save your batch as a CSV file?", true);
-        if should_save {
-            filename = ask_string("What would you like to name it?", &filename)
-        }
-        println!("Perfect, now, let's start planning your batch!");
+    should_save = ask_bool("Would you like to save your batch as a CSV file?", true);
+    if should_save {
+        filename = ask_string("What would you like to name it?", &filename)
+    }
+    println!("Perfect, now, let's start planning your batch!");
+    println!("----------------------------------------------");
+    loop {
+        let qty = ask_float(
+            format!("Batch {}: how many codes do you want?", batches.len() + 1).as_str(),
+            5.0,
+        ) as u64;
+        let value = ask_float(
+            format!(
+                "Batch {}: how much {} should each of your {} codes be worth?",
+                batches.len() + 1,
+                coin_params.ticker,
+                qty
+            )
+            .as_str(),
+            1.0,
+        );
+        batches.push(PromoBatch { value, qty });
+
+        // Clear the screen and log the batches
+        clear_terminal_screen();
         println!("----------------------------------------------");
-        loop {
-            let qty = ask_float(format!("Batch {}: how many codes do you want?", batches.len() + 1).as_str(), 5.0) as u64;
-            let value = ask_float(format!("Batch {}: how much PIV should each of your {} codes be worth?", batches.len() + 1, qty).as_str(), 1.0);
-            batches.push(PromoBatch{ value, qty });
-
-            // Clear the screen and log the batches
-            clear_terminal_screen();
-            println!("----------------------------------------------");
-            let mut count = 1;
-            let mut total_value = 0.0;
-            let mut total_codes: u64 = 0;
-            for batch in batches.as_slice() {
-                println!(" - Batch {}: {} codes of {} PIV", count, batch.qty, batch.value);
-                count += 1;
-                total_value += batch.value * batch.qty as f64;
-                total_codes += batch.qty;
-            }
-            println!("... for a total of {} codes worth {} PIV", total_codes, total_value);
-            println!("----------------------------------------------");
-
-            // Ask if they wanna add more batches, or they're ready to start generating
-            let continue_batching = ask_bool("Would you like to add another batch?", false);
-
-            // If it's a no... break the batch creation loop and move on
-            if !continue_batching {
-                break;
-            }
+        let mut count = 1;
+        let mut total_value = 0.0;
+        let mut total_codes: u64 = 0;
+        for batch in batches.as_slice() {
+            println!(
+                " - Batch {}: {} codes of {} {}",
+                count, batch.qty, batch.value, coin_params.ticker
+            );
+            count += 1;
+            total_value += batch.value * batch.qty as f64;
+            total_codes += batch.qty;
         }
+        println!(
+            "... for a total of {} codes worth {} {}",
+            total_codes, total_value, coin_params.ticker
+        );
+        println!("----------------------------------------------");
 
-        // Check if they want a prefix used
-        promo_prefix = ask_string(format!("What prefix would you like to use, if any? For example: promo-{}, or, if omitted: {}", get_alpha_numeric_rand(5), get_alpha_numeric_rand(6)).as_str(), "");
+        // Ask if they wanna add more batches, or they're ready to start generating
+        let continue_batching = ask_bool("Would you like to add another batch?", false);
 
-        // Start generating!
-        println!("Time to begin! Please do NOT cancel or interfere with the generation process!");
-        println!("Generating...");
-        let mut codes: Vec<OptimisedPromoKeypair> = Vec::new();
+        // If it's a no... break the batch creation loop and move on
+        if !continue_batching {
+            break;
+        }
+    }
 
-        // We'll loop each batch and decrement it's quantity as each code is generated
-        let mut batch_count = 1;
-        for mut batch in batches {
-            let mut code_count = 1;
-            // Loop each code within the batch
-            while batch.qty >= 1 {
-                let mut promo = create_promo_key(&promo_prefix);
-                let wif = secret_to_wif(promo.private);
-                println!("Code {code_count} of batch {batch_count}: Promo: '{}' - Address: {} - WIF: {wif}", promo.code, promo.public);
+    // Check if they want a prefix used
+    promo_prefix = ask_string(
+        format!(
+            "What prefix would you like to use, if any? For example: promo-{}, or, if omitted: {}",
+            get_alpha_numeric_rand(5),
+            get_alpha_numeric_rand(6)
+        )
+        .as_str(),
+        &promo_prefix,
+    );
 
-                // If these codes have value, fill 'em!
-                if batch.value > 0.0 {
-                    println!(" - Filling with {} PIV...", batch.value);
+    // Start generating!
+    println!("Time to begin! Please do NOT cancel or interfere with the generation process!");
+    println!("Generating...");
+    let mut codes: Vec<OptimisedPromoKeypair> = Vec::new();
 
-                    // Attempt filling the code's address
-                    loop {
-                        match rpc.sendtoaddress(&promo.public, batch.value + PROMO_FEE, Some("PIVX Promos pre-fill"), Some(""), Some(false)) {
-                            Ok(tx_id) => {
-                                println!(" - TX: {}", tx_id);
-                                promo.value = batch.value;
-                                break;
-                            },
-                            Err(e) => {
-                                eprintln!(" - TX failed with error: \"{}\". Retrying in 10 seconds...", e);
-                                std::thread::sleep(std::time::Duration::from_secs(10));
-                            }
+    // We'll loop each batch and decrement it's quantity as each code is generated
+    let mut batch_count = 1;
+    for mut batch in batches {
+        let mut code_count = 1;
+        // Loop each code within the batch
+        while batch.qty >= 1 {
+            let mut promo = create_promo_key(&promo_prefix, &coin_params);
+            let wif = secret_to_wif(promo.private, coin_params.priv_key_byte);
+            println!(
+                "Code {code_count} of batch {batch_count}: Promo: '{}' - Address: {} - WIF: {wif}",
+                promo.code, promo.public
+            );
+
+            // If these codes have value, fill 'em!
+            if batch.value > 0.0 {
+                println!(" - Filling with {} {}...", batch.value, coin_params.ticker);
+
+                // Attempt filling the code's address
+                loop {
+                    match rpc.sendtoaddress(
+                        &promo.public,
+                        batch.value + coin_params.promo_fee,
+                        Some(&format!("{} Promos pre-fill", coin_params.name)),
+                        Some(""),
+                        Some(false),
+                    ) {
+                        Ok(tx_id) => {
+                            println!(" - TX: {}", tx_id);
+                            promo.value = batch.value;
+                            break;
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                " - TX failed with error: \"{}\". Retrying in 10 seconds...",
+                                e
+                            );
+                            std::thread::sleep(std::time::Duration::from_secs(10));
                         }
                     }
                 }
-                // Push this promo
-                codes.push(promo);
-
-                // Decrement batch quantity
-                batch.qty -= 1;
-                code_count += 1;
             }
-            batch_count += 1;
-        }
+            // Push this promo
+            codes.push(promo);
 
-        // Now we generated all the codes, save and adios!
-        if should_save {
-            // Create the file and convert codes to CSV
-            let mut file = fs::File::create(filename.clone() + ".csv").unwrap();
-            file.write_all(compile_to_csv(codes).as_bytes()).unwrap();
-            println!("Saved batch as \"{filename}.csv\"!");
+            // Decrement batch quantity
+            batch.qty -= 1;
+            code_count += 1;
         }
-
-        println!("Finished! - Quitting...");
-        exit(0);
+        batch_count += 1;
     }
 
-    if target.len() == 1 {
-        // Generate a single keypair and immediately return + exit
-        let secp = Secp256k1::new();
-        dump_keypair(create_pivx_address(&secp));
-        exit(0);
-    } else {
-        // If no threading is selected, we auto-select all available threads, or bail out if not possible
-        if threads <= 0 {
-            threads = usize::from(available_parallelism().unwrap_or_else(|_| {
-                eprintln!("Init Failure: thread count is invalid and the fallback thread estimator failed.");
-                exit(1);
-            }));
-        }
-        // Notify we're running multi-threaded
-        println!("Running at {} threads", threads);
-
-        // Enforce and cache our target's capitalisation
-        if case_insensitive {
-            target = target.to_lowercase();
-        }
-
-        // Spin up our key-gen threads
-        let (tx, rx) = mpsc::channel();
-        for _ in 0..threads {
-            let ctx = tx.clone();
-            let ctarget = target.clone();
-            thread::spawn(move|| {
-                ctx.send(vanitygen_blocking(ctarget, case_insensitive)).unwrap();
-            });
-        }
-
-        // Start our key search
-        let search_start = time::Instant::now();
-        loop {
-            let result = rx.recv().unwrap();
-
-            // Check if the prefix matches the target
-            let elapsed_time = search_start.elapsed();
-            println!("Found in {}s, avg speed of {} keys per-sec", elapsed_time.as_secs_f32(), ((result.iterations as f32 * threads as f32) / elapsed_time.as_secs_f32()));
-            dump_keypair(result.keypair);
-            exit(0);
-        }
+    // Now we generated all the codes, save and adios!
+    if should_save {
+        // Create the file and convert codes to CSV
+        let mut file = fs::File::create(filename.clone() + ".csv").unwrap();
+        file.write_all(compile_to_csv(codes, &coin_params.ticker).as_bytes()).unwrap();
+        println!("Saved batch as \"{filename}.csv\"!");
     }
-}
 
-/// Generates a PIVX keypair until a vanity address with a specific prefix is found.
-///
-/// This function generates keypairs in a blocked thread while checking if the generated
-/// PIVX address matches the specified vanity target. It repeats this process until a matching
-/// address is found, and then returns the resulting keypair along with the number of iterations
-/// performed.
-///
-/// # Arguments
-///
-/// * `target` - The desired vanity prefix for the address.
-/// * `case_insensitive` - Indicates whether the matching should be case-insensitive.
-///
-/// # Returns
-///
-/// A `VanityResult` struct containing the keypair that matches the vanity target and the number
-/// of iterations performed.
-///
-pub fn vanitygen_blocking(target: String, case_insensitive: bool) -> VanityResult {
-    // Precompute a Secp256k1 context
-    let secp = Secp256k1::new();
-    let mut iterations: u64 = 0;
-
-    loop {
-        // Generate a keypair
-        let keypair = create_pivx_address(&secp);
-
-        // Apply case sensitivity rules
-        let address = match case_insensitive {
-            true => keypair.public.to_lowercase(),
-            false => keypair.public.clone()
-        };
-
-        // Check if the prefix matches the target
-        if address[..target.len()] == target {
-            return VanityResult{keypair, iterations}
-        }
-        iterations += 1;
-    }
+    println!("Finished! - Quitting...");
 }
 
 pub fn ask_float(question: &str, default: f64) -> f64 {
@@ -319,7 +225,7 @@ pub fn ask_float(question: &str, default: f64) -> f64 {
         // Attempt to parse the float
         float_answer = match answer.parse() {
             Ok(number) => number,
-            Err(_) => 0.0
+            Err(_) => 0.0,
         };
 
         // If it's a good answer, we break the loop
@@ -357,7 +263,7 @@ pub fn ask_string(question: &str, default: &str) -> String {
 pub fn ask_bool(question: &str, default: bool) -> bool {
     let default_answer_string = match default {
         true => "Y/n",
-        false => "y/N"
+        false => "y/N",
     };
     println!("{question}");
     print!("{default_answer_string}: ");
@@ -377,7 +283,7 @@ pub fn ask_bool(question: &str, default: bool) -> bool {
     match answer.as_str() {
         "y" => true,
         "n" => false,
-        _ => default
+        _ => default,
     }
 }
 
@@ -386,33 +292,23 @@ pub fn clear_terminal_screen() {
     print!("{esc}c", esc = 27 as char);
 }
 
-
-/// Prints the PIVX address and corresponding private key of a given keypair.
-///
-/// # Arguments
-///
-/// * `keypair` - An `OptimisedKeypair` struct containing the public and private keys.
-///
-pub fn dump_keypair(keypair: OptimisedKeypair) {
-    println!("Here's your PIVX address!\r\n - Address: {}\r\n - Private Key: {}", keypair.public, secret_to_wif(keypair.private));
-}
-
 /// Converts a secret key into Wallet Import Format (WIF).
 ///
 /// # Arguments
 ///
 /// * `privkey` - The secret key to be converted.
+/// * `version_byte` - The version byte for the WIF format (coin-specific).
 ///
 /// # Returns
 ///
 /// The secret key in WIF format as a string.
 ///
-pub fn secret_to_wif(privkey: SecretKey) -> String {
+pub fn secret_to_wif(privkey: SecretKey, version_byte: u8) -> String {
     // Convert into byte format
     let privkey_bytes = privkey.secret_bytes();
 
     // Format the byte payload into WIF format
-    let mut wif_bytes = vec![212];
+    let mut wif_bytes = vec![version_byte];
     wif_bytes.extend_from_slice(&privkey_bytes);
     wif_bytes.extend_from_slice(&[1]);
 
@@ -424,17 +320,18 @@ pub fn secret_to_wif(privkey: SecretKey) -> String {
     wif_bytes.to_base58()
 }
 
-/// Converts a public key into a PIVX address.
+/// Converts a public key into a coin address.
 ///
 /// # Arguments
 ///
 /// * `pubkey` - The public key to be converted.
+/// * `version_byte` - The version byte for the address format (coin-specific).
 ///
 /// # Returns
 ///
-/// The PIVX address as a string.
+/// The coin address as a string.
 ///
-pub fn pubkey_to_address(pubkey: PublicKey) -> String {
+pub fn pubkey_to_address(pubkey: PublicKey, version_byte: u8) -> String {
     // Convert into byte format
     let pubkey_bytes = pubkey.serialize();
 
@@ -447,7 +344,7 @@ pub fn pubkey_to_address(pubkey: PublicKey) -> String {
     let public_key_hash = ripemd_factory.finalize();
 
     // Create the double-SHA256 Checksum for the network public key hash
-    let mut address_bytes = vec![30];
+    let mut address_bytes = vec![version_byte];
     address_bytes.extend_from_slice(&public_key_hash);
     let sha256d = sha256d::Hash::hash(&address_bytes).into_inner();
 
@@ -458,39 +355,9 @@ pub fn pubkey_to_address(pubkey: PublicKey) -> String {
     address_bytes.to_base58()
 }
 
-/// Creates a PIVX keypair by generating a new secret key and deriving the corresponding public key.
-///
-/// This function takes a `Secp256k1` context as input and uses it to compute a new secret key. It then
-/// derives the corresponding public key using the cached `secp` context. Finally, it processes the
-/// public key into a PIVX network address and returns an `OptimisedKeypair` struct containing the
-/// generated private and public keys.
-///
-/// # Arguments
-///
-/// * `secp` - A reference to a `Secp256k1` context.
-///
-/// # Returns
-///
-/// An `OptimisedKeypair` struct containing the generated private and public keys.
-///
-pub fn create_pivx_address(secp: &Secp256k1<secp256k1::All>) -> OptimisedKeypair {
-    // Compute a new secret
-    let privkey = SecretKey::new(&mut rand::thread_rng());
-
-    // Derive a Secp256k1 Public Key from the secret using a cached secp context
-    let pubkey = PublicKey::from_secret_key(&secp, &privkey);
-
-    // Process the Secp256k1 Public Key into a Network Address
-    let address = pubkey_to_address(pubkey);
-
-    // Return the keypair without any private key post-processing
-    OptimisedKeypair{private: privkey, public: address}
-}
-
 /// A string representing the base58 charset for generating alphanumeric random values.
-/// 
-const MAP_ALPHANUMERIC: &str =
-    "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ123456789";
+///
+const MAP_ALPHANUMERIC: &str = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ123456789";
 
 /// Returns a vector of random bytes of the specified size.
 ///
@@ -529,17 +396,18 @@ pub fn get_alpha_numeric_rand(n_size: usize) -> String {
     result
 }
 
-/// Creates a PIVX Promos keypair based on a given prefix.
+/// Creates a crypto Promos keypair based on a given prefix and coin parameters.
 ///
 /// # Arguments
 ///
 /// * `prefix` - A reference to a String representing the prefix of the promotional code.
+/// * `coin_params` - A reference to the CoinParams for the selected coin.
 ///
 /// # Returns
 ///
 /// An `OptimisedPromoKeypair` struct containing the generated private and public keys, along with the promo code.
 ///
-pub fn create_promo_key(prefix: &String) -> OptimisedPromoKeypair {
+pub fn create_promo_key(prefix: &String, coin_params: &CoinParams) -> OptimisedPromoKeypair {
     // Precompute a Secp256k1 context
     let secp = Secp256k1::new();
 
@@ -566,9 +434,17 @@ pub fn create_promo_key(prefix: &String) -> OptimisedPromoKeypair {
 
     // Generate the final keys
     let private = SecretKey::from_slice(&promo_key).unwrap();
-    let public = pubkey_to_address(PublicKey::from_secret_key(&secp, &private));
+    let public = pubkey_to_address(
+        PublicKey::from_secret_key(&secp, &private),
+        coin_params.pub_key_byte
+    );
 
-    OptimisedPromoKeypair { private, public, code: promo_code, value: 0.0 }
+    OptimisedPromoKeypair {
+        private,
+        public,
+        code: promo_code,
+        value: 0.0,
+    }
 }
 
 pub struct RpcConfig {
@@ -577,21 +453,54 @@ pub struct RpcConfig {
     pub rpc_port: u16,
 }
 
-pub fn parse_pivx_conf() -> RpcConfig {
+/// Selects a coin from the list of supported coins
+pub fn select_coin() -> CoinParams {
+    let supported_coins = get_supported_coins();
+    
+    println!("Which coin are you creating Promo Codes for?");
+    
+    for (i, coin) in supported_coins.iter().enumerate() {
+        println!("{}. {} ({})", i + 1, coin.name, coin.ticker);
+    }
+    
+    let default_idx = supported_coins
+        .iter()
+        .position(|c| c.ticker == DEFAULT_COIN_TICKER)
+        .unwrap_or(0) + 1;
+    
+    let selection = ask_float(
+        format!("Enter a number (1-{}) to select a coin", supported_coins.len()).as_str(),
+        default_idx as f64,
+    ) as usize;
+    
+    // Make sure the selection is valid
+    if selection < 1 || selection > supported_coins.len() {
+        println!("Invalid selection, using default: {} ({})", 
+                 supported_coins[default_idx - 1].name, 
+                 supported_coins[default_idx - 1].ticker);
+        return supported_coins[default_idx - 1].clone();
+    }
+    
+    supported_coins[selection - 1].clone()
+}
+
+pub fn parse_coin_conf(coin_params: &CoinParams) -> RpcConfig {
     let mut conf_dir = home_dir().unwrap_or_default();
     if cfg!(target_os = "windows") {
-        conf_dir.push("AppData\\Roaming\\PIVX");
+        conf_dir.push(format!("AppData\\Roaming\\{}", coin_params.name));
     } else if cfg!(target_os = "macos") {
-        conf_dir.push("Library/Application Support/PIVX/");
+        conf_dir.push(format!("Library/Application Support/{}/", coin_params.name));
     } else {
-        conf_dir.push(".pivx");
+        // On Linux, use lowercase name with dot prefix
+        let linux_dir_name = format!(".{}", coin_params.conf_dir_name.to_lowercase());
+        conf_dir.push(linux_dir_name);
     }
-    let conf_file = conf_dir.join("pivx.conf");
+    let conf_file = conf_dir.join(&coin_params.conf_file_name);
 
     let mut defaults = RpcConfig {
         rpc_user: String::from("user"),
         rpc_pass: String::from("pass"),
-        rpc_port: 51473,
+        rpc_port: coin_params.default_rpc_port,
     };
 
     let contents = match fs::read_to_string(conf_file) {
@@ -612,11 +521,12 @@ pub fn parse_pivx_conf() -> RpcConfig {
     defaults
 }
 
-pub fn compile_to_csv(promos: Vec<OptimisedPromoKeypair>) -> String {
+pub fn compile_to_csv(promos: Vec<OptimisedPromoKeypair>, coin_ticker: &str) -> String {
     let mut csv = String::from("coin,value,code,\n");
 
     for promo in promos {
-        csv.push_str(&format!("{},{},{}\n", "pivx", promo.value, promo.code));
+        // Store the selected coin ticker in the CSV
+        csv.push_str(&format!("{},{},{}\n", coin_ticker.to_lowercase(), promo.value, promo.code));
     }
     csv
 }
