@@ -1,64 +1,73 @@
-# VanityGen
-Powerful PIVX VanityGen written in Rust.
+# Batcher
 
-## VanityGen Usage
+Batcher is a tool that helps users generate batches of on-chain promotional codes, powered by [PIVX Promos](https://github.com/PIVX-Labs/PIVX-Promos), with the optional ability of automatically filling them with coins by communicating with a local node.
+
+This was built for creating physical and/or virtual promotional coins that can be redeemed via a redeeming application (typically a frontend lightwallet system).
+
+## Features
+
+- [x] Multi-coin support (PIVX, Bitcoin, and more)
+- [x] Create batches of promotional Keypairs
+- [x] Automatically fill code addresses with coins
+- [x] Export Codes to CSV
+- [x] Coin-specific configuration handling
+
+## How It Works
+
+Batcher generates promo codes like `promo-abc123` which are deterministically converted to private keys using a secure hashing algorithm. From these private keys, public addresses are derived according to each cryptocurrency's specifications.
+
+## Supported Coins
+
+Batcher now supports multiple cryptocurrencies, including:
+
+- PIVX (PIV)
+- Metrix (MRX)
+- DogeCoin (DOGE)
+- ... and more!
+
+Adding new coins is simple - just add their parameters to the `get_supported_coins()` function in `src/coins.rs`:
+
+```rust
+CoinParams {
+    name: "YourCoin".to_string(),
+    ticker: "YCN".to_string(),
+    conf_dir_name: "YourCoin".to_string(),
+    conf_file_name: "yourcoin.conf".to_string(),
+    default_rpc_port: 12345,
+    pub_key_byte: 30, // Replace with your coin's version byte
+    priv_key_byte: 128, // Replace with your coin's WIF byte
+    promo_fee: 0.00010000, // Network fee for transactions
+}
+```
+
+## Platform-Specific Configuration
+
+Batcher automatically handles platform-specific configurations:
+
+- On Windows, config files are located in `AppData\Roaming\{CoinName}`
+- On macOS, config files are located in `Library/Application Support/{CoinName}/`
+- On Linux, config files are located in `~/.{coincasename}` (lowercase with a dot prefix)
+
+## Usage
+
+When you run Batcher, it will:
+
+1. Prompt you to select which cryptocurrency you want to work with
+2. Read the coin's configuration from the appropriate directory
+3. Guide you through creating batches of promotional codes
+4. Optionally fill the generated addresses with the selected cryptocurrency
+5. Save the results to a CSV file
+
+## Building from Source
+
 ```bash
-# Choose a target prefix for your address: defaults to "D" for non-vanity mode
---target="D<string>" # example: --target=DLabs
-    
-# Choose the threads to run at: defaults to maximum cores
---threads=<int> # example: --threads=6
-    
-# Case Insensitivity: use this flag to disable case sensitivity for faster searches
---case-insensitive
+cargo build --release
 ```
 
-A full example may look like:
-```
-./pivx-vanity --case-insensitive --threads=6 --target=DLabs
-```
-
-## PIVX Promos Usage
-
-As well as having VanityGen: this binary supports PIVX Promos!
-
-VanityGen supports an alternative "promos" mode in which the tool guides you through a step-by-step PIVX Promos batching process - whether it's a single code, or 10,000 codes, the process is the same.
+## Running Batcher
 
 ```bash
-# Startup in to Promos mode
---promos
+./target/release/batcher
 ```
 
-After which, the tool will ask you a series of questions to construct your batch of PIVX Promo codes, for example:
-```
-% ./pivx-vanity --promos
-Would you like to save your batch as a CSV file?
-Y/n: Y
-
-What would you like to name it? (default: "promos")
-promos: test
-
-Perfect, now, let's start planning your batch!
-----------------------------------------------
-Batch 1: how many codes do you want? (default: "5")
-5: 5
-
-Batch 1: how much PIV should each of your 5 codes be worth? (default: "1")
-1: 25
-
-----------------------------------------------
- - Batch 1: 5 codes of 25 PIV
-... for a total of 5 codes worth 125 PIV
-----------------------------------------------
-Would you like to add another batch?
-y/N: N
-
-What prefix would you like to use? For example: promos-QDmes (default: "promos")
-promos: jskitty
-
-Time to begin! Please do NOT cancel or interfere with the generation process!
-Generating...
-Code 1 of batch 1: Promo: 'jskitty-o3QAi' - Address: D6RYFELVRb3gcLUqoVMioMyJfjJ1X4e6ww - WIF: YUAZnZPKGQGWeiMfrxQNjSiUqexAVyiddcaeUZNdncaX4brVj21g
- - Filling with 25 PIV...
- - TX: ...
-```
+Follow the interactive prompts to generate your promotional codes.
