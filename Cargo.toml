@@ -1,7 +1,7 @@
 [package]
 name = "batcher"
 description = "An on-chain Promo Code system with multi-coin support, a fork of PIVX Promos."
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 repository = "https://github.com/PIVX-Labs/Batcher"
 license = "MIT"
