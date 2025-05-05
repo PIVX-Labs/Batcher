@@ -54,7 +54,7 @@ pub fn get_supported_coins() -> Vec<CoinParams> {
         },
         CoinParams {
             name: "PepeCoin".to_string(),
-            ticker: "PEPE".to_string(),
+            ticker: "PEP".to_string(),
             conf_dir_name: "Pepecoin".to_string(),
             conf_file_name: "pepecoin.conf".to_string(),
             default_rpc_port: 33873,
