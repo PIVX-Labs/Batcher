@@ -1,6 +1,6 @@
 use std::{
     env::home_dir,
-    fs,
+    fs::{self, OpenOptions},
     io::{self, prelude::*},
 };
 
@@ -135,6 +135,34 @@ fn main() {
         &promo_prefix,
     );
 
+    // Create CSV file and write header if saving is enabled
+    let csv_filename = if should_save {
+        let mut filename_with_ext = filename.clone() + ".csv";
+        
+        // Check if file already exists
+        if std::path::Path::new(&filename_with_ext).exists() {
+            println!("Warning: File '{}' already exists!", filename_with_ext);
+            println!("If you choose 'No', a new file with a timestamp will be created instead.");
+            let overwrite = ask_bool("Do you want to overwrite it?", false);
+            
+            if !overwrite {
+                // Generate a unique filename with timestamp
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                filename_with_ext = format!("{}_{}.csv", filename, timestamp);
+                println!("Creating new file: {}", filename_with_ext);
+            }
+        }
+        
+        let mut file = fs::File::create(&filename_with_ext).unwrap();
+        writeln!(file, "coin,value,code,").unwrap();
+        Some(filename_with_ext)
+    } else {
+        None
+    };
+
     // Start generating!
     println!("Time to begin! Please do NOT cancel or interfere with the generation process!");
     println!("Generating...");
@@ -181,6 +209,16 @@ fn main() {
                     }
                 }
             }
+
+            // Append to CSV file immediately if saving is enabled
+            if let Some(ref csv_file) = csv_filename {
+                let mut file = OpenOptions::new()
+                    .append(true)
+                    .open(csv_file)
+                    .unwrap();
+                writeln!(file, "{},{},{}", coin_params.ticker.to_lowercase(), promo.value, promo.code).unwrap();
+            }
+
             // Push this promo
             codes.push(promo);
 
@@ -191,12 +229,11 @@ fn main() {
         batch_count += 1;
     }
 
-    // Now we generated all the codes, save and adios!
+    // CSV already saved during generation if enabled
     if should_save {
-        // Create the file and convert codes to CSV
-        let mut file = fs::File::create(filename.clone() + ".csv").unwrap();
-        file.write_all(compile_to_csv(codes, &coin_params.ticker).as_bytes()).unwrap();
-        println!("Saved batch as \"{filename}.csv\"!");
+        if let Some(ref csv_file) = csv_filename {
+            println!("Saved batch as \"{}\"!", csv_file);
+        }
     }
 
     println!("Finished! - Quitting...");
@@ -252,12 +289,17 @@ pub fn ask_string(question: &str, default: &str) -> String {
     let mut answer = String::new();
     let stdin = std::io::stdin();
     stdin.read_line(&mut answer).unwrap_or_default();
+    answer = answer.trim().to_string();
 
     // Add some natural spacing
     println!("");
 
-    // Trim and return it
-    answer.trim().to_string()
+    // If it's empty: use the default
+    if answer.is_empty() {
+        default.to_string()
+    } else {
+        answer
+    }
 }
 
 pub fn ask_bool(question: &str, default: bool) -> bool {
