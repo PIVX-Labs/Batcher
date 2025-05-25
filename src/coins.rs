@@ -50,7 +50,7 @@ pub fn get_supported_coins() -> Vec<CoinParams> {
             default_rpc_port: 33831,
             pub_key_byte: 50,
             priv_key_byte: 85,
-            promo_fee: 0.01000000,
+            promo_fee: 2.25000000,
         },
         CoinParams {
             name: "PepeCoin".to_string(),
@@ -60,7 +60,7 @@ pub fn get_supported_coins() -> Vec<CoinParams> {
             default_rpc_port: 33873,
             pub_key_byte: 56,
             priv_key_byte: 158,
-            promo_fee: 0.00010000,
+            promo_fee: 0.01000000,
         },
         CoinParams {
             name: "StakeCubeCoin".to_string(),
